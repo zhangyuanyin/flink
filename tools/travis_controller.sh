@@ -80,6 +80,11 @@ function deleteOldCaches() {
 	done
 }
 
+git clone https://github.com/apache/flink-shaded.git --branch master --single-branch
+cd flink-shaded
+mvn clean install
+cd ..
+
 # delete leftover caches from previous builds
 find "$CACHE_DIR" -mindepth 1 -maxdepth 1 | grep -v "$TRAVIS_BUILD_NUMBER" | deleteOldCaches
 

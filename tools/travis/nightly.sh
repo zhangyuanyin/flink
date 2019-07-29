@@ -30,6 +30,11 @@ SCRIPT=$1
 source ${HERE}/setup_docker.sh
 source ${HERE}/setup_kubernetes.sh
 
+git clone https://github.com/zentol/flink-shaded.git --branch master --single-branch
+cd flink-shaded
+mvn clean install
+cd ..
+
 ARTIFACTS_DIR="${HERE}/artifacts"
 
 mkdir -p $ARTIFACTS_DIR || { echo "FAILURE: cannot create log directory '${ARTIFACTS_DIR}'." ; exit 1; }
