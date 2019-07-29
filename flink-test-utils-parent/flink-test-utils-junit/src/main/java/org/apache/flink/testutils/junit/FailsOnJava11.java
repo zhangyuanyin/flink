@@ -15,27 +15,10 @@
  * limitations under the License.
  */
 
-package org.apache.flink.streaming.connectors.kafka;
-
-import org.apache.flink.testutils.junit.FailsOnJava11;
-
-import org.junit.Test;
-import org.junit.experimental.categories.Category;
+package org.apache.flink.testutils.junit;
 
 /**
- * {@link KafkaShortRetentionTestBase} for Kafka 0.8 .
+ * Marker interface for tests that fail on Java 11.
  */
-@SuppressWarnings("serial")
-public class KafkaShortRetention08ITCase extends KafkaShortRetentionTestBase {
-
-	@Test(timeout = 60000)
-	@Category(FailsOnJava11.class)
-	public void testAutoOffsetReset() throws Exception {
-		runAutoOffsetResetTest();
-	}
-
-	@Test(timeout = 60000)
-	public void testAutoOffsetResetNone() throws Exception {
-		runFailOnAutoOffsetResetNoneEager();
-	}
+public interface FailsOnJava11 {
 }
