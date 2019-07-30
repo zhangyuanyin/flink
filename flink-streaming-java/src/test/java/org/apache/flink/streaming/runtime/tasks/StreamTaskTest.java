@@ -125,7 +125,6 @@ import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.Timeout;
-import org.mockito.ArgumentCaptor;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -482,26 +481,27 @@ public class StreamTaskTest extends TestLogger {
 	@Test
 	public void testAsyncCheckpointingConcurrentCloseAfterAcknowledge() throws Exception {
 
-		final OneShotLatch acknowledgeCheckpointLatch = new OneShotLatch();
+		final CompletableFuture<TaskStateSnapshot> snapshotFuture = new CompletableFuture<>();
 		final OneShotLatch completeAcknowledge = new OneShotLatch();
 
-		CheckpointResponder checkpointResponder = mock(CheckpointResponder.class);
-		doAnswer(new Answer() {
+		CheckpointResponder checkpointResponder = new CheckpointResponder() {
 			@Override
-			public Object answer(InvocationOnMock invocation) throws Throwable {
-				acknowledgeCheckpointLatch.trigger();
+			public void acknowledgeCheckpoint(JobID jobID, ExecutionAttemptID executionAttemptID, long checkpointId, CheckpointMetrics checkpointMetrics, TaskStateSnapshot subtaskState) {
+				snapshotFuture.complete(subtaskState);
 
 				// block here so that we can issue the concurrent cancel call
-				completeAcknowledge.await();
-
-				return null;
+				try {
+					completeAcknowledge.await();
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
 			}
-		}).when(checkpointResponder).acknowledgeCheckpoint(
-			any(JobID.class),
-			any(ExecutionAttemptID.class),
-			anyLong(),
-			any(CheckpointMetrics.class),
-			any(TaskStateSnapshot.class));
+
+			@Override
+			public void declineCheckpoint(JobID jobID, ExecutionAttemptID executionAttemptID, long checkpointId, Throwable cause) {
+				throw new UnsupportedOperationException();
+
+			}};
 
 		TaskStateManager taskStateManager = new TaskStateManagerImpl(
 			new JobID(1L, 2L),
@@ -539,19 +539,7 @@ public class StreamTaskTest extends TestLogger {
 				CheckpointOptions.forCheckpointWithDefaultLocation(),
 				false);
 
-			acknowledgeCheckpointLatch.await();
-
-			ArgumentCaptor<TaskStateSnapshot> subtaskStateCaptor = ArgumentCaptor.forClass(TaskStateSnapshot.class);
-
-			// check that the checkpoint has been completed
-			verify(checkpointResponder).acknowledgeCheckpoint(
-				any(JobID.class),
-				any(ExecutionAttemptID.class),
-				eq(checkpointId),
-				any(CheckpointMetrics.class),
-				subtaskStateCaptor.capture());
-
-			TaskStateSnapshot subtaskStates = subtaskStateCaptor.getValue();
+			TaskStateSnapshot subtaskStates = snapshotFuture.get();
 			OperatorSubtaskState subtaskState = subtaskStates.getSubtaskStateMappings().iterator().next().getValue();
 
 			// check that the subtask state contains the expected state handles
