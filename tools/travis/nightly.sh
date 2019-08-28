@@ -30,7 +30,7 @@ SCRIPT=$1
 source ${HERE}/setup_docker.sh
 source ${HERE}/setup_kubernetes.sh
 
-git clone https://github.com/zentol/flink-shaded.git --branch master --single-branch
+git clone https://github.com/apache/flink-shaded.git --branch master --single-branch
 cd flink-shaded
 mvn clean install
 cd ..
