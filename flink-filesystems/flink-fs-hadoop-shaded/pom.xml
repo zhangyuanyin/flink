@@ -211,7 +211,7 @@ under the License.
 								<!-- we shade only the parts that are internal to Hadoop and not used / exposed downstream -->
 								<relocation>
 									<pattern>javax.xml.bind</pattern>
-									<shadedPatern>org.apache.flink.fs.shaded.hadoop3.javax.xml.bind</shadedPatern>
+									<shadedPattern>org.apache.flink.fs.shaded.hadoop3.javax.xml.bind</shadedPattern>
 								</relocation>
 								<relocation>
 									<pattern>com.google.re2j</pattern>
