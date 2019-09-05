@@ -27,7 +27,6 @@ import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.clusterframework.BootstrapTools;
 import org.apache.flink.runtime.io.network.NetworkEnvironment;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
-import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.metrics.MetricRegistry;
 import org.apache.flink.runtime.metrics.groups.JobManagerMetricGroup;
 import org.apache.flink.runtime.metrics.groups.TaskManagerMetricGroup;
@@ -49,11 +48,12 @@ import javax.management.ReflectionException;
 import java.lang.management.ClassLoadingMXBean;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryUsage;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryType;
 import java.lang.management.ThreadMXBean;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.runtime.metrics.util.SystemResourcesMetricsInitializer.instantiateSystemMetrics;
 
@@ -65,8 +65,23 @@ public class MetricUtils {
 	private static final String METRIC_GROUP_STATUS_NAME = "Status";
 	private static final String METRICS_ACTOR_SYSTEM_NAME = "flink-metrics";
 
-	static final String METRIC_GROUP_HEAP_NAME = "Heap";
-	static final String METRIC_GROUP_NONHEAP_NAME = "NonHeap";
+	private static final String METRIC_GROUP_HEAP_NAME = "Heap";
+	private static final String METRIC_GROUP_NONHEAP_NAME = "NonHeap";
+
+	private static final String MEMORY_USED = "Used";
+	private static final String MEMORY_COMMITTED = "Committed";
+	private static final String MEMORY_MAX = "Max";
+
+	private static final String MEMORY_TYPE_EDEN = "Eden";
+	private static final String MEMORY_TYPE_SURVIVOR = "Survivor";
+	private static final String MEMORY_TYPE_OLD = "Old";
+
+	private static final String MEMORY_REGEX_YOUNG = "Eden Space|PS Eden Space|Par Eden Space|G1 Eden Space";
+	private static final String MEMORY_REGEX_SURVIVOR = "Survivor Space|PS Survivor Space|Par Survivor Space|G1 Survivor Space";
+	private static final String MEMORY_REGEX_OLD = "Tenured Gen|PS Old Gen|CMS Old Gen|G1 Old Gen";
+
+	private static final String STRING_FORMAT_PATTERN = "%s%s%s";
+	private static final String STRING_SEPARATOR_DOT = ".";
 
 	private MetricUtils() {
 	}
@@ -164,9 +179,14 @@ public class MetricUtils {
 		}
 	}
 
+	/**
+	 * Cause the jvm heap/non-heap memory be reported only once, change the way of report to {@link ManagementFactory#getMemoryPoolMXBeans}.
+	 */
 	private static void instantiateMemoryMetrics(MetricGroup metrics) {
-		instantiateHeapMemoryMetrics(metrics.addGroup(METRIC_GROUP_HEAP_NAME));
-		instantiateNonHeapMemoryMetrics(metrics.addGroup(METRIC_GROUP_NONHEAP_NAME));
+		// Rebuild this part for reporting needed heap information (Attention: maybe it's a bug code at front logic).
+		List<MemoryPoolMXBean> memoryPoolMXBeans = ManagementFactory.getMemoryPoolMXBeans();
+		instantiateHeapMemoryMetrics(metrics.addGroup(METRIC_GROUP_HEAP_NAME), memoryPoolMXBeans);
+		instantiateNonHeapMemoryMetrics(metrics.addGroup(METRIC_GROUP_NONHEAP_NAME), memoryPoolMXBeans);
 
 		final MBeanServer con = ManagementFactory.getPlatformMBeanServer();
 
@@ -199,20 +219,171 @@ public class MetricUtils {
 		}
 	}
 
+	/**
+	 * deal with heap memory metrics relatives.
+	 *
+	 * @param metrics
+	 * @param memoryPoolMXBeans
+	 */
 	@VisibleForTesting
-	static void instantiateHeapMemoryMetrics(final MetricGroup metricGroup) {
-		instantiateMemoryUsageMetrics(metricGroup, () -> ManagementFactory.getMemoryMXBean().getHeapMemoryUsage());
+	private static void instantiateHeapMemoryMetrics(MetricGroup metrics, List<MemoryPoolMXBean> memoryPoolMXBeans) {
+		List<MemoryPoolMXBean> heapMemoryPoolMXBeans;
+		doInstantiateMemoryMetrics(metrics, heapMemoryPoolMXBeans = memoryPoolMXBeans.stream().filter(pool -> pool.getType().equals(MemoryType.HEAP)).collect(Collectors.toList()));
+		doInstantiateMemoryMetrics(metrics, heapMemoryPoolMXBeans, MemoryType.HEAP);
 	}
 
+	/**
+	 * deal with non-heap memory metrics relatives.
+	 *
+	 * @param metrics
+	 * @param memoryPoolMXBeans
+	 */
 	@VisibleForTesting
-	static void instantiateNonHeapMemoryMetrics(final MetricGroup metricGroup) {
-		instantiateMemoryUsageMetrics(metricGroup, () -> ManagementFactory.getMemoryMXBean().getNonHeapMemoryUsage());
+	private static void instantiateNonHeapMemoryMetrics(MetricGroup metrics, List<MemoryPoolMXBean> memoryPoolMXBeans) {
+		doInstantiateMemoryMetrics(metrics, memoryPoolMXBeans.stream().filter(pool -> pool.getType().equals(MemoryType.NON_HEAP)).collect(Collectors.toList()));
 	}
 
-	private static void instantiateMemoryUsageMetrics(final MetricGroup metricGroup, final Supplier<MemoryUsage> memoryUsageSupplier) {
-		metricGroup.<Long, Gauge<Long>>gauge(MetricNames.MEMORY_USED, () -> memoryUsageSupplier.get().getUsed());
-		metricGroup.<Long, Gauge<Long>>gauge(MetricNames.MEMORY_COMMITTED, () -> memoryUsageSupplier.get().getCommitted());
-		metricGroup.<Long, Gauge<Long>>gauge(MetricNames.MEMORY_MAX, () -> memoryUsageSupplier.get().getMax());
+	/**
+	 * perform to report jvm memory metric.
+	 *
+	 * @param metrics
+	 * @param memoryPoolMxBeans
+	 */
+	private static void doInstantiateMemoryMetrics(MetricGroup metrics, List<MemoryPoolMXBean> memoryPoolMxBeans) {
+		metrics.<Long, Gauge<Long>>gauge(MEMORY_USED, new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans.stream().map(memory -> memory.getUsage().getUsed()).reduce((sum, memory) -> sum + memory).get();
+			}
+		});
+		metrics.<Long, Gauge<Long>>gauge(MEMORY_COMMITTED, new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans.stream().map(memory -> memory.getUsage().getCommitted()).reduce((sum, memory) -> sum + memory).get();
+			}
+		});
+		metrics.<Long, Gauge<Long>>gauge(MEMORY_MAX, new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans.stream().map(memory -> memory.getUsage().getMax()).reduce((sum, memory) -> sum + memory).get();
+			}
+		});
+	}
+
+	/**
+	 * perform to add eden, survivor, old memory space report only.
+	 *
+	 * @param metrics
+	 * @param memoryPoolMxBeans
+	 */
+	private static void doInstantiateMemoryMetrics(MetricGroup metrics, List<MemoryPoolMXBean> memoryPoolMxBeans, Enum memoryType) {
+		/**
+		 * 1. report eden memory relatives.
+		 */
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_EDEN, STRING_SEPARATOR_DOT, MEMORY_USED), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_YOUNG))
+					.map(memory -> memory.getUsage().getUsed()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_EDEN, STRING_SEPARATOR_DOT, MEMORY_COMMITTED), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_YOUNG))
+					.map(memory -> memory.getUsage().getCommitted()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_EDEN, STRING_SEPARATOR_DOT, MEMORY_MAX), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_YOUNG))
+					.map(memory -> memory.getUsage().getMax()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		/**
+		 * 2. report survivor memory relatives.
+		 */
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_SURVIVOR, STRING_SEPARATOR_DOT, MEMORY_USED), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_SURVIVOR))
+					.map(memory -> memory.getUsage().getUsed()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_SURVIVOR, STRING_SEPARATOR_DOT, MEMORY_COMMITTED), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_SURVIVOR))
+					.map(memory -> memory.getUsage().getCommitted()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_SURVIVOR, STRING_SEPARATOR_DOT, MEMORY_MAX), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_SURVIVOR))
+					.map(memory -> memory.getUsage().getMax()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		/**
+		 * 3. report old memory relatives.
+		 */
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_OLD, STRING_SEPARATOR_DOT, MEMORY_USED), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_OLD))
+					.map(memory -> memory.getUsage().getUsed()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_OLD, STRING_SEPARATOR_DOT, MEMORY_COMMITTED), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_OLD))
+					.map(memory -> memory.getUsage().getCommitted()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
+
+		metrics.<Long, Gauge<Long>>gauge(String.format(STRING_FORMAT_PATTERN, MEMORY_TYPE_OLD, STRING_SEPARATOR_DOT, MEMORY_MAX), new Gauge<Long>() {
+			@Override
+			public Long getValue() {
+				return memoryPoolMxBeans
+					.stream()
+					.filter(memory -> memory.getName().matches(MEMORY_REGEX_OLD))
+					.map(memory -> memory.getUsage().getMax()).reduce((sum, memory) -> sum + memory)
+					.get();
+			}
+		});
 	}
 
 	private static void instantiateThreadMetrics(MetricGroup metrics) {
